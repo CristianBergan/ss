@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Stunt Bike Extreme</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Interfaccia UI */
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .stat {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        /* Controlli Touch */
+        .controls {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 40px;
+            box-sizing: border-box;
+            pointer-events: none;
+        }
+
+        .control-group {
+            pointer-events: auto;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        /* Joystick per accelerazione */
+        #joystick-container {
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            touch-action: none;
+        }
+
+        #joystick-knob {
+            width: 60px;
+            height: 60px;
+            background: #ff4757;
+            border-radius: 50%;
+            box-shadow: 0 4px 15px rgba(255, 71, 87, 0.5);
+        }
+
+        /* Frecce per rotazione */
+        .stunt-button {
+            width: 80px;
+            height: 80px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            border-radius: 15px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 40px;
+            user-select: none;
+            cursor: pointer;
+            transition: transform 0.1s, background 0.1s;
+        }
+
+        .stunt-button:active {
+            transform: scale(0.9);
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            color: white;
+            display: none;
+            border: 2px solid #ff4757;
+        }
+
+        button.restart {
+            margin-top: 20px;
+            padding: 10px 30px;
+            font-size: 20px;
+            background: #2ed573;
+            border: none;
+            color: white;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="ui-overlay">
+        <div class="stat" id="score-display">PUNTI: 0</div>
+        <div class="stat" id="flip-display"></div>
+    </div>
+
+    <div class="controls">
+        <!-- Joystick sinistro: Su = Accelera, Giù = Frena/Indietro -->
+        <div class="control-group">
+            <div id="joystick-container">
+                <div id="joystick-knob"></div>
+            </div>
+        </div>
+
+        <!-- Frecce destre: Rotazione per Backflip/Frontflip -->
+        <div class="control-group">
+            <div class="stunt-button" id="btn-backflip">↺</div>
+            <div class="stunt-button" id="btn-frontflip">↻</div>
+        </div>
+    </div>
+
+    <div id="game-over">
+        <h1 id="crash-text">HAI CRASHATO!</h1>
+        <p id="final-score"></p>
+        <button class="restart" onclick="resetGame()">Riprova</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('score-display');
+    const flipDisplay = document.getElementById('flip-display');
+    const gameOverScreen = document.getElementById('game-over');
+
+    // Configurazione Gioco
+    let width, height;
+    let score = 0;
+    let isGameOver = false;
+    let particles = [];
+
+    // Fisica della Moto
+    const bike = {
+        x: 100,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        angle: 0,
+        angleV: 0,
+        radius: 25,
+        targetAngle: 0,
+        grounded: false,
+        lastAngle: 0,
+        fullRotations: 0
+    };
+
+    // Input state
+    let input = {
+        throttle: 0, // da -1 a 1
+        rotate: 0    // -1 (back), 1 (front), 0 (null)
+    };
+
+    // Terreno (Procedurale)
+    let terrain = [];
+    const terrainStep = 50;
+    let scrollX = 0;
+
+    function init() {
+        resize();
+        resetGame();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    function resetGame() {
+        score = 0;
+        scrollX = 0;
+        isGameOver = false;
+        gameOverScreen.style.display = 'none';
+        bike.x = 150;
+        bike.y = -100;
+        bike.vx = 0;
+        bike.vy = 0;
+        bike.angle = 0;
+        bike.angleV = 0;
+        bike.fullRotations = 0;
+        terrain = [];
+        generateTerrain(0, width + 500);
+        scoreDisplay.innerText = "PUNTI: 0";
+    }
+
+    function generateTerrain(start, end) {
+        let lastY = terrain.length > 0 ? terrain[terrain.length - 1].y : height * 0.7;
+        for (let x = start; x < end; x += terrainStep) {
+            // Genera colline sinoidali casuali
+            let newY = lastY + (Math.random() - 0.5) * 150;
+            // Limiti per non uscire dallo schermo
+            newY = Math.max(height * 0.4, Math.min(height * 0.9, newY));
+            terrain.push({ x: x, y: newY });
+            lastY = newY;
+        }
+    }
+
+    function getTerrainY(worldX) {
+        for (let i = 0; i < terrain.length - 1; i++) {
+            if (worldX >= terrain[i].x && worldX <= terrain[i+1].x) {
+                let t = (worldX - terrain[i].x) / (terrain[i+1].x - terrain[i].x);
+                return terrain[i].y * (1 - t) + terrain[i+1].y * t;
+            }
+        }
+        return height;
+    }
+
+    function getTerrainAngle(worldX) {
+        let y1 = getTerrainY(worldX - 2);
+        let y2 = getTerrainY(worldX + 2);
+        return Math.atan2(y2 - y1, 4);
+    }
+
+    // Joystick Logic
+    const joystickContainer = document.getElementById('joystick-container');
+    const joystickKnob = document.getElementById('joystick-knob');
+    let isJoystickActive = false;
+    let joystickOriginY = 0;
+
+    joystickContainer.addEventListener('touchstart', (e) => {
+        isJoystickActive = true;
+        joystickOriginY = e.touches[0].clientY;
+    });
+
+    window.addEventListener('touchmove', (e) => {
+        if (!isJoystickActive) return;
+        let touchY = e.touches[0].clientY;
+        let diffY = joystickOriginY - touchY; // Positivo = su
+        let clamped = Math.max(-50, Math.min(50, diffY));
+        
+        joystickKnob.style.transform = `translateY(${-clamped}px)`;
+        input.throttle = clamped / 50; // -1 to 1
+    });
+
+    window.addEventListener('touchend', () => {
+        isJoystickActive = false;
+        joystickKnob.style.transform = `translateY(0)`;
+        input.throttle = 0;
+    });
+
+    // Stunt Buttons Logic
+    const btnBack = document.getElementById('btn-backflip');
+    const btnFront = document.getElementById('btn-frontflip');
+
+    btnBack.addEventListener('touchstart', (e) => { e.preventDefault(); input.rotate = -1; });
+    btnBack.addEventListener('touchend', () => { input.rotate = 0; });
+    btnFront.addEventListener('touchstart', (e) => { e.preventDefault(); input.rotate = 1; });
+    btnFront.addEventListener('touchend', () => { input.rotate = 0; });
+
+    // Keyboard Fallback (per desktop)
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp' || e.key === 'w') input.throttle = 1;
+        if (e.key === 'ArrowDown' || e.key === 's') input.throttle = -0.5;
+        if (e.key === 'ArrowLeft' || e.key === 'a') input.rotate = -1;
+        if (e.key === 'ArrowRight' || e.key === 'd') input.rotate = 1;
+    });
+    window.addEventListener('keyup', (e) => {
+        if (['ArrowUp', 'ArrowDown', 'w', 's'].includes(e.key)) input.throttle = 0;
+        if (['ArrowLeft', 'ArrowRight', 'a', 'd'].includes(e.key)) input.rotate = 0;
+    });
+
+    function update() {
+        if (isGameOver) return;
+
+        // Gravità
+        bike.vy += 0.4;
+        
+        // Accelerazione
+        if (bike.grounded) {
+            bike.vx += input.throttle * 0.8;
+            bike.vx *= 0.98; // Attrito
+        } else {
+            bike.vx *= 0.995; // Resistenza aria
+            // Rotazione in aria
+            bike.angleV += input.rotate * 0.012;
+            bike.angleV *= 0.95;
+            bike.angle += bike.angleV;
+
+            // Tracking Flip
+            let diff = bike.angle - bike.lastAngle;
+            bike.fullRotations += diff / (Math.PI * 2);
+            bike.lastAngle = bike.angle;
+
+            if (Math.abs(bike.fullRotations) >= 1) {
+                let count = Math.floor(Math.abs(bike.fullRotations));
+                score += count * 500;
+                showFlipMsg(count > 1 ? `COMBO x${count}!` : "FLIP +500!");
+                bike.fullRotations = 0;
+                scoreDisplay.innerText = "PUNTI: " + score;
+            }
+        }
+
+        bike.x += bike.vx;
+        bike.y += bike.vy;
+
+        // Scroll
+        scrollX = bike.x - 150;
+
+        // Collisione Terreno
+        let groundY = getTerrainY(bike.x);
+        let groundAngle = getTerrainAngle(bike.x);
+
+        if (bike.y + bike.radius > groundY) {
+            // Controlla se l'angolo è troppo diverso dal terreno (crash)
+            let angleDiff = Math.abs(bike.angle - groundAngle) % (Math.PI * 2);
+            if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
+
+            if (angleDiff > 1.1 && !bike.grounded) {
+                endGame();
+            }
+
+            bike.y = groundY - bike.radius;
+            bike.vy = 0;
+            bike.grounded = true;
+            
+            // Allinea gradualmente l'angolo della moto al terreno
+            let target = groundAngle;
+            bike.angle += (target - bike.angle) * 0.2;
+            bike.fullRotations = 0; // Resetta rotazione parziale all'atterraggio
+            bike.lastAngle = bike.angle;
+        } else {
+            bike.grounded = false;
+        }
+
+        // Genera altro terreno
+        if (terrain[terrain.length - 1].x < bike.x + width) {
+            generateTerrain(terrain[terrain.length - 1].x + terrainStep, bike.x + width + 1000);
+        }
+
+        // Punti per distanza
+        if (bike.vx > 1) {
+            score += Math.floor(bike.vx / 10);
+            scoreDisplay.innerText = "PUNTI: " + score;
+        }
+    }
+
+    function showFlipMsg(msg) {
+        flipDisplay.innerText = msg;
+        flipDisplay.style.opacity = 1;
+        setTimeout(() => flipDisplay.style.opacity = 0, 1000);
+    }
+
+    function endGame() {
+        isGameOver = true;
+        gameOverScreen.style.display = 'block';
+        document.getElementById('final-score').innerText = "Punteggio finale: " + score;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, width, height);
+
+        // Disegna Sfondo
+        drawBackground();
+
+        ctx.save();
+        ctx.translate(-scrollX, 0);
+
+        // Disegna Terreno
+        ctx.beginPath();
+        ctx.moveTo(terrain[0].x, terrain[0].y);
+        for (let i = 1; i < terrain.length; i++) {
+            if (terrain[i].x < scrollX - 100) continue;
+            if (terrain[i].x > scrollX + width + 100) break;
+            ctx.lineTo(terrain[i].x, terrain[i].y);
+        }
+        ctx.lineTo(scrollX + width, height);
+        ctx.lineTo(scrollX, height);
+        ctx.closePath();
+        
+        let grad = ctx.createLinearGradient(0, height * 0.5, 0, height);
+        grad.addColorStop(0, '#3e2723');
+        grad.addColorStop(1, '#1a0f0d');
+        ctx.fillStyle = grad;
+        ctx.fill();
+        
+        // Linea di superficie
+        ctx.strokeStyle = '#2ed573';
+        ctx.lineWidth = 5;
+        ctx.stroke();
+
+        // Disegna Moto
+        drawBike();
+
+        ctx.restore();
+    }
+
+    function drawBackground() {
+        ctx.fillStyle = '#1e272e';
+        ctx.fillRect(0, 0, width, height);
+        
+        // Montagne distanti
+        ctx.fillStyle = '#2d3436';
+        for(let i=0; i<5; i++) {
+            let x = (i * 400 - (scrollX * 0.2) % 400);
+            ctx.beginPath();
+            ctx.moveTo(x, height);
+            ctx.lineTo(x + 200, height - 300);
+            ctx.lineTo(x + 400, height);
+            ctx.fill();
+        }
+    }
+
+    function drawBike() {
+        ctx.save();
+        ctx.translate(bike.x, bike.y);
+        ctx.rotate(bike.angle);
+
+        // Ruote
+        ctx.fillStyle = '#333';
+        ctx.beginPath();
+        ctx.arc(-20, 10, 12, 0, Math.PI * 2); // Posteriore
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(20, 10, 12, 0, Math.PI * 2); // Anteriore
+        ctx.fill();
+
+        // Telaio
+        ctx.strokeStyle = '#ff4757';
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-20, 10);
+        ctx.lineTo(0, -10);
+        ctx.lineTo(20, 10);
+        ctx.stroke();
+        
+        // Sedile e Manubrio
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-10, -5);
+        ctx.lineTo(5, -20); // Manubrio
+        ctx.stroke();
+
+        // Pilota (semplificato)
+        ctx.fillStyle = '#2f3542';
+        ctx.beginPath();
+        ctx.arc(0, -25, 8, 0, Math.PI * 2); // Testa
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    function gameLoop() {
+        update();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    window.onload = init;
+    window.onresize = resize;
+
+</script>
+</body>
+</html>
